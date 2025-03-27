@@ -11,8 +11,13 @@
 //-use the constant memory for the convolution mask
 //-use shared memory to reduce the number of global accesses and handle the boundary conditions when loading input list elements into the shared memory
 //-clamp your output values
+
+// P is output
+// N is input
+// M is cache
+// Ns is shared memory
 __global__ void convolutionKernal(float *P, float *N, int height, int width, int channels, const float * __restrict__ M) {
-	__shared__ float Ns[O_TILE_WIDTH + 2 * 2][O_TILE_WIDTH + 2 * 2][3];
+	__shared__ float Ns[O_TILE_WIDTH + 2 * MASK_WIDTH][O_TILE_WIDTH + 2 * MASK_WIDTH][3];
 
 	int tx = threadIdx.x;
 	int ty = threadIdx.y;
@@ -36,9 +41,9 @@ __global__ void convolutionKernal(float *P, float *N, int height, int width, int
 	__syncthreads();
 
 	// some threads do not calculate output
-	float output = 0.0f;
 	if (ty < O_TILE_WIDTH && tx < O_TILE_WIDTH) {
 		for (int c = 0; c < channels; c++) {
+			float output = 0.0f;
 			for (int i = 0; i < MASK_WIDTH; i++) {
 				for (int j = 0; j < MASK_WIDTH; j++) {
 					output += M[i * MASK_WIDTH + j] * Ns[i + ty][j + tx][c];
@@ -119,7 +124,7 @@ int main(int argc, char *argv[]) {
   dim3 dimGrid((wbImage_getWidth(inputImage) - 1) / O_TILE_WIDTH + 1,
 	  (wbImage_getHeight(inputImage) - 1) / O_TILE_WIDTH + 1, 1);
 
-  convolutionKernal<<<dimGrid,dimBlock>>>(deviceInputImageData, deviceOutputImageData, imageHeight, imageWidth, imageChannels, deviceMaskData);
+  convolutionKernal << <dimGrid, dimBlock >> > (deviceOutputImageData, deviceInputImageData, imageHeight, imageWidth, imageChannels, deviceMaskData);
 
   //initialize thread block and kernel grid dimensions
   //invoke CUDA kernel	
