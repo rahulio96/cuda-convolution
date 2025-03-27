@@ -11,6 +11,48 @@
 //-use the constant memory for the convolution mask
 //-use shared memory to reduce the number of global accesses and handle the boundary conditions when loading input list elements into the shared memory
 //-clamp your output values
+__global__ void convolutionKernal(float *P, float *N, int height, int width, int channels, const float * __restrict__ M) {
+	__shared__ float Ns[O_TILE_WIDTH + 2 * 2][O_TILE_WIDTH + 2 * 2][3];
+
+	int tx = threadIdx.x;
+	int ty = threadIdx.y;
+
+	int row_o = blockIdx.y * O_TILE_WIDTH + ty;
+	int col_o = blockIdx.x * O_TILE_WIDTH + tx;
+
+	int row_i = row_o - 2;
+	int col_i = col_o - 2;
+
+	// deal w/ boundaries
+	for (int c = 0; c < channels; c++) {
+		if ((row_i >= 0) && (row_i < height) && (col_i >= 0) && (col_i < width)) {
+			Ns[ty][tx][c] = N[(row_i * width + col_i) * channels + c];
+		}
+		else {
+			Ns[ty][tx][c] = 0.0f;
+		}
+	}
+
+	__syncthreads();
+
+	// some threads do not calculate output
+	float output = 0.0f;
+	if (ty < O_TILE_WIDTH && tx < O_TILE_WIDTH) {
+		for (int c = 0; c < channels; c++) {
+			for (int i = 0; i < MASK_WIDTH; i++) {
+				for (int j = 0; j < MASK_WIDTH; j++) {
+					output += M[i * MASK_WIDTH + j] * Ns[i + ty][j + tx][c];
+				}
+			}
+
+			if (row_o < height && col_o < width) {
+				P[(row_o * width + col_o) * channels + c] = clamp(output);
+			}
+		}
+
+	}
+
+}
 
 int main(int argc, char *argv[]) {
   wbArg_t arg;
@@ -54,10 +96,10 @@ int main(int argc, char *argv[]) {
 
   wbTime_start(GPU, "Doing GPU memory allocation");
   //@@ INSERT CODE HERE
-  int size = inputLength * sizeof(float);
+  int size = imageWidth * imageHeight * imageChannels * sizeof(float);
   cudaMalloc((void**)&deviceInputImageData, size);
   cudaMalloc((void**)&deviceOutputImageData, size);
-  cudaMalloc((void**)&deviceMaskData, size);
+  cudaMalloc((void**)&deviceMaskData, (MASK_WIDTH * MASK_WIDTH * sizeof(float)));
 
   //allocate device memory
   wbTime_stop(GPU, "Doing GPU memory allocation");
@@ -66,16 +108,18 @@ int main(int argc, char *argv[]) {
   //@@ INSERT CODE HERE
   cudaMemcpy(deviceInputImageData, hostInputImageData, size, cudaMemcpyHostToDevice);
   cudaMemcpy(deviceOutputImageData, hostOutputImageData, size, cudaMemcpyHostToDevice);
-  cudaMemcpy(deviceMaskData, hostMaskData, size, cudaMemcpyHostToDevice);
+  cudaMemcpy(deviceMaskData, hostMaskData, (MASK_WIDTH * MASK_WIDTH * sizeof(float)), cudaMemcpyHostToDevice);
 
   //copy host memory to device
   wbTime_stop(Copy, "Copying data to the GPU");
 
   wbTime_start(Compute, "Doing the computation on the GPU");
   //@@ INSERT CODE HERE
-  dim3 dimBlock(O_TILE_WIDTH + 4, O_TILE_WIDTH + 4);
+  dim3 dimBlock(O_TILE_WIDTH + (MASK_WIDTH-1), O_TILE_WIDTH + (MASK_WIDTH-1));
   dim3 dimGrid((wbImage_getWidth(inputImage) - 1) / O_TILE_WIDTH + 1,
 	  (wbImage_getHeight(inputImage) - 1) / O_TILE_WIDTH + 1, 1);
+
+  convolutionKernal<<<dimGrid,dimBlock>>>(deviceInputImageData, deviceOutputImageData, imageHeight, imageWidth, imageChannels, deviceMaskData);
 
   //initialize thread block and kernel grid dimensions
   //invoke CUDA kernel	
